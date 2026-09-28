@@ -15,10 +15,18 @@ NVIDIA Parakeet-CTC-0.6B を浮動小数点演算なし・CPU フォールバッ
 
 ## 現状
 
+マイルストーンごとの目的・ゴールは [docs/03_reproduction_plan.md](docs/03_reproduction_plan.md) を参照。
+
 - [x] 論文調査・技術調査・計画
-- [x] Swish の minimax 近似（§3.2, Table 3 の最大誤差）: `python scripts/fit_swish_approx.py` で論文の係数 a* = −0.1240, c* = 2.4632 と 5 条件すべての最大誤差を再現
-- [ ] Phase 0: FP32 ベースライン（1.87 / 3.76）
-- [ ] Phase 1〜6: `docs/03_reproduction_plan.md` を参照
+- [x] M0: Swish の minimax 近似（§3.2, Table 3 の最大誤差）。`python scripts/fit_swish_approx.py` で論文の係数 a* = −0.1240, c* = 2.4632 と 5 条件すべての最大誤差を再現
+- [ ] M1: 評価基盤と FP32 ベースライン（1.87 / 3.76）
+- [ ] M2: スタンドアロン FP32 参照実装
+- [ ] M3: レンジ解析（Fig. 2）
+- [ ] M4: 整数シミュレータ構築
+- [ ] M5: シミュレーション実験（Table 2, 3）
+- [ ] M6: NPU グラフ構築と integer-only 検証
+- [ ] M7: 実機評価（Table 1）
+- [ ] M8: 結果まとめ
 
 ## 実行例
 

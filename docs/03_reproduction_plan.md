@@ -1,91 +1,193 @@
 # 03. 再現実装計画
 
-## 0. ゴールと成功基準
+## 0. 全体のゴール
 
-論文の主張を **ハードウェア非依存の部分（シミュレーション）** と **実機部分** に分け、前者を確実に再現してから後者に進む。
+論文の主張を次の 2 つに分けて検証する。
 
-| レベル | 再現対象 | 成功基準（許容幅） |
-|---|---|---|
-| L0 Swish 近似 | §3.2 の (a*, c*) と Table 3 の最大誤差 | 小数第 3 位まで一致 → **達成済み**（`scripts/fit_swish_approx.py`） |
-| L1 FP32 | Table 2 の FP32 行 1.87 / 3.76 / 10.55 | ±0.05 pt |
-| L2 レンジ解析 | Fig. 2(a)(b) | BN 比の層別プロファイル（最大 ~10^4）と pre-enc 11–21× / enc 2–3× が定性的に一致 |
-| L3 シミュレーション | Table 2（I-BERT recipe / Naive INT8 / I-Parakeet）と Table 3 全行 | I-Parakeet は ±0.3 pt。**全アブレーションの順位が一致**すること |
-| L4 実機 | Table 1（WER 4.97, RTF 0.048, 612 MiB）+ 標準ツールチェーンの 100% WER | WER ±0.3 pt。RTF とメモリは同一端末なら ±20%、別端末なら参考値 |
+1. **アルゴリズム上の主張**（ハードウェア非依存）: 3 つの貢献（整数相対位置 MHSA、minimax Swish、レンジ対策）で、integer-only のまま WER 劣化を抑えられる → Table 2, 3 / Fig. 2
+2. **デプロイ上の主張**（実機依存）: 浮動小数点演算なし・CPU フォールバックなしで NPU 上で動き、CPU より大幅に速く省メモリ → Table 1
 
-「integer-only」の検証基準（論文の定義に従う）:
-- シミュレータ: 推論経路の全テンソルが整数型であり、float は**オフラインの定数計算（m, LUT, 定数量子化）にのみ**使われることをテストで保証。
-- 実機: グラフ内の全テンソルが固定小数点型（FP16/FP32 テンソルなし）で、HTP 上でグラフ全体が finalize されること。
+(1) を先に確実に再現してから (2) に進む。
+「integer-only」の判定基準は論文の定義に合わせる。
 
-## 1. 全体方針
+- **シミュレータ**: 推論経路の全テンソルが整数型であること。float は**オフラインの定数計算にだけ**使ってよい（固定小数点乗数 m、LUT、定数の量子化）。これをテストで保証する。
+- **実機**: グラフ内の全テンソルが固定小数点型で（FP16/FP32 テンソルなし）、グラフ全体が HTP 上で finalize されること。
+
+## 1. マイルストーン一覧
+
+| # | マイルストーン | 目的（一言） | ゴール（主要指標） | 論文の対応箇所 | 期間目安 | 状態 |
+|---|---|---|---|---|---|---|
+| M0 | Swish 近似の再現 | データ不要で検証できる数式部分を先に確定する | (a*, c*) と最大誤差 5 条件が一致 | §3.2, Table 3 (Max err.) | – | **完了** |
+| M1 | 評価基盤と FP32 ベースライン | 全比較の「物差し」を論文と同じ条件で作る | WER 1.87 / 3.76（±0.05） | Table 2 FP32 行, §4.1 評価条件 | 1〜2 日 | 未着手 |
+| M2 | スタンドアロン FP32 参照実装 | 量子化を差し込める、実機グラフと同じ構造のモデルを作る | NeMo と出力一致（max\|Δ\| < 1e−4） | §2.1, §3.1（Φ, P） | 3〜4 日 | 未着手 |
+| M3 | レンジ解析 | どのテンソルを INT16 / p99.9 にするかを根拠付きで決める | Fig. 2 の傾向を再現 | §3.3, Fig. 2 | 1〜2 日 | 未着手 |
+| M4 | 整数シミュレータ構築 | integer-only が保証された、正しさ検証済みの実装を作る | 単体テスト・float 非混入テストが全て通る | §2.2, §3.1, §3.2 | 1〜1.5 週 | 未着手 |
+| M5 | シミュレーション実験 | 3 つの貢献の効果をハードウェア非依存で検証する | I-Parakeet 5.32（±0.3）、アブレーション順位一致 | Table 2, Table 3 | 1 週 | 未着手 |
+| M6 | NPU グラフ構築と integer-only 検証 | 「FP なし・CPU フォールバックなし」を機能面で成立させる | FP テンソル 0、HTP で finalize 成功 | §4.1 Settings | 1.5〜2 週 | 未着手 |
+| M7 | 実機評価 | 精度・速度・メモリのトレードオフを実機で検証する | WER 4.97（±0.3）、RTF・メモリの計測 | Table 1 | 1 週 | 未着手 |
+| M8 | 結果まとめ | 再現結果と論文との差を追試可能な形で残す | 全表・図の対照表と再実行手順 | 全体 | 2〜3 日 | 未着手 |
+
+### 依存関係
 
 ```
-Phase 0 環境・データ ─▶ Phase 1 FP32 参照実装 ─┬▶ Phase 2 レンジ解析 ─┐
-                                                └▶ Phase 3 整数シミュレータ ─┴▶ Phase 4 シミュレーション実験 ─▶ Phase 6 まとめ
-                                                                    └▶ Phase 5 実機デプロイ ───────────────┘
+M0 Swish 近似（完了・独立）
+
+M1 評価基盤・FP32 ─▶ M2 参照実装 ─▶ M3 レンジ解析 ─▶ M4 整数シミュレータ ─┬─▶ M5 シミュレーション実験 ─┬─▶ M8 まとめ
+                                                                           └─▶ M6 NPU グラフ ─▶ M7 実機評価 ─┘
 ```
 
-- **NeMo は「正解の参照」としてのみ使い、量子化対象のモデルは自前のスタンドアロン PyTorch 実装にする。**
-  NeMo のモジュールに量子化を差し込むより、全演算が明示的な自前実装の方が「どこで float が入るか」を完全に制御できる。
-- シミュレータと実機グラフは **同一のキャリブレーション結果（エンコーディング）** を共有する。
-- 論文に書かれていない点（`01_paper_summary.md` §7 の 15 項目）は既定値を置き、**感度を測って記録**する。
+- M5 と M6 は並行して進められる。M6 が使うキャリブレーション結果（エンコーディング）は M4 の成果物。
+- M6・M7 は実機（または Qualcomm AI Hub）と QAIRT SDK が必要。入手を待つ間も M1〜M5 は進められる。
 
-## 2. フェーズ詳細
+---
 
-### Phase 0: 環境・データ準備（1〜2 日）
+## 2. マイルストーン詳細
 
-- Python 環境: PyTorch, NeMo（チェックポイント読込と FP32 参照用。PyPI `nemo-toolkit` 3.0.0）, `jiwer`, Whisper 正規化器, `soundfile`, `sentencepiece`
-- モデル: `nvidia/parakeet-ctc-0.6b`（.nemo）→ `model_config.yaml`, 重み, トークナイザを展開して config を確認（xscaling, vocab サイズ, 前処理設定）
-- データ: LibriSpeech dev-other / test-clean / test-other、Common Voice 英語 test（版は FP32 WER 10.55% に合うものを探す）
-- 成果物: `scripts/eval_fp32.py`（NeMo で推論 → Whisper 正規化 → WER）
-- 完了条件: **FP32 WER 1.87 / 3.76**（±0.05）
+各マイルストーンを **目的 → ゴール（完了条件）→ 主な作業 → 成果物 → 未達時の切り分け** の順に書く。
+ゴールには 2 種類ある。
 
-### Phase 1: スタンドアロン FP32 参照実装（3〜4 日）
+- **[必達]**: これを満たさないと次のマイルストーンに進まない
+- **[目標]**: 論文値との一致。論文に書かれていない事項やハードウェアに左右されるため、未達でも理由を記録すれば先に進んでよい
 
-- `iparakeet/model/`: 前処理（NeMo 互換 log-mel, CPU/FP）, pre-encoder, Conformer ×24, CTC head, greedy デコード
-  - BN を DW conv に fold した形でも実装（量子化前提の形）
-  - relative shift を **静的 Gather（`idx[i,j] = L−1−i+j`）** で実装し、NeMo の pad/reshape 版と一致をテスト
-  - P を最長バケットで 1 回計算し、長さ L のグラフではスライスを使う
-- `iparakeet/model/buckets.py`: 入力長バケットへの振り分けと無音特徴パディング
-- 完了条件:
-  - NeMo とのロジット差 max\|Δ\| < 1e−4、dev-other の書き起こしが完全一致
-  - バケット＋無音パディングありの FP32 WER も測る（パディング自体の影響を量子化の影響と切り分けるため）
-  - test-other の長さ分布からパディング率 23% になるバケット刻みを決定
+---
 
-### Phase 2: レンジ解析 = Fig. 2 の再現（1〜2 日）
+### M0: Swish 近似の再現 ✅ 完了
 
-- `scripts/range_analysis.py`
-  - (a) BN スケール `|γ|/√(σ²+ε)` の層別 max/median（データ不要）
-  - (b) dev-other 上の全活性化テンソルの `max|x|` と `p99.9|x|`（2 パス: max → ヒストグラム）、比をプロット
-  - FP16 の最大値（65504）を超えるテンソルの有無（標準 FP16 変換が壊れる理由の確認）
-- 完了条件: 論文の Fig. 2 と同じ傾向（BN 比が一部の層で 10^3〜10^4、pre-enc 11–21×、encoder 2–3×）
-
-### Phase 3: 整数シミュレータ（1〜1.5 週）
-
-モジュール構成:
-
-| モジュール | 内容 |
+| 項目 | 内容 |
 |---|---|
-| `quant/fixed_point.py` | Eq. 6 の量子化、Eq. 7 の再量子化（m, n=16, round-half-up シフト）、m の相対誤差ログ |
-| `quant/observers.py` | min–max / パーセンタイル（ヒストグラム）オブザーバ、per-channel 重み量子化 |
-| `quant/qconfig.py` | テンソル名 → (bit 幅, 較正方式) の割当。レシピ（I-BERT recipe / Naive INT8 / I-Parakeet / 各アブレーション）を YAML で定義 |
-| `intops/linear.py` | INT8 GEMM / Conv / DW Conv（GPU は `torch._int_mm`、CPU は float64 厳密エミュレーション） |
-| `intops/layernorm.py`, `intops/softmax.py` | I-BERT カーネルを int32/int64 テンソルで再実装 |
-| `intops/swish.py` | 二次多項式 Swish（係数は L∞/L2 × Swish/tanh の 4 種）、Hard-Swish、LUT Swish（実機模擬） |
-| `intops/sigmoid.py` | GLU 用 sigmoid（LUT / 多項式） |
-| `intops/relpos_mhsa.py` | Eq. 10–11 の融合スコア、定数 `q_P`、Gather による Φ |
-| `intops/residual.py` | スケールの異なる 2 入力の整数加算（×0.5 を乗数に吸収） |
-| `sim/int_parakeet.py` | 上記を組み立てた integer-only Parakeet-CTC |
-| `sim/calibrate.py` | dev-other でキャリブレーション → エンコーディング JSON を出力（実機と共有） |
+| **目的** | 論文の中で唯一、モデル・データ・実機なしで検証できる数式部分（Eq. 12, 13）を先に確定させる。あわせて「x の範囲」「誤差の測り方」の解釈を固め、M4 の I-Swish 実装の係数を確定する |
+| 論文の対応箇所 | §3.2, Table 3 の Max err. 列 |
+| 前提 | なし |
 
-テスト（`tests/`）:
-- 各カーネルの float 参照との誤差上限（例: I-Swish の出力誤差 ≤ 0.039 + 量子化誤差）
-- relative shift の Gather と NeMo 版の一致
-- 「float 非混入」テスト: 推論関数内で float テンソルが生成されたら失敗させる（`torch` の dtype チェック / フック）
-- INT32 オーバーフロー検出（デバッグモード）
+**ゴール（完了条件）**
+- [x] [必達] L∞ fit to Swish の係数が (a*, c*) = (−0.1240, 2.4632) と 4 桁一致
+- [x] [必達] 5 条件の Swish 最大誤差が論文と小数第 3 位まで一致（0.039 / 0.045 / 0.068 / 0.073 / 0.142）
 
-完了条件: 全テストが通り、FP32 と層ごとの SQNR を比較できる。
+**成果物**: `scripts/fit_swish_approx.py`
 
-### Phase 4: シミュレーション実験 = Table 2, 3 の再現（1 週）
+**分かったこと**: 最大誤差は x ∈ ℝ 全体で評価してよい（|x| が大きいと誤差は 0 に近づくため、±8〜±60 のどのグリッドでも結果は同じ）。
+提案係数の tanh 近似は原点で不連続（±0.25）なので、GLU には流用しない（`01_paper_summary.md` §7）。
+
+---
+
+### M1: 評価基盤と FP32 ベースライン
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | 以降のすべての比較の「物差し」を作る。データセット、Whisper 正規化、greedy CTC デコードを論文と同じ条件にそろえる。これにより、評価パイプライン由来の差を、量子化由来の差と取り違えないようにする |
+| 論文の対応箇所 | Table 2 の FP32 行、§4.1 の評価条件（Whisper English text normalizer） |
+| 前提 | モデル（`nvidia/parakeet-ctc-0.6b`）とデータ（LibriSpeech, Common Voice）をダウンロードできること |
+
+**ゴール（完了条件）**
+- [ ] [必達] NeMo の FP32 推論で LibriSpeech **test-clean 1.87% / test-other 3.76%**（各 ±0.05 pt）
+- [ ] [必達] 共通評価スクリプトが、どの推論経路（NeMo / 自前 FP32 / シミュレータ / 実機出力）の仮説テキストでも同じ手順で WER を出せる
+- [ ] [目標] Common Voice test で **10.55%**（±0.2 pt）になるデータ版を特定する
+- [ ] [必達] モデルの config（xscaling、語彙数、前処理設定）を確認し、`02_technical_survey.md` の記述を確定させる
+
+**主な作業**
+- 環境構築（PyTorch, NeMo, jiwer, Whisper 正規化器, sentencepiece, soundfile）
+- データ取得と manifest 作成（dev-other / test-clean / test-other / CV test）
+- `iparakeet/eval/`（データ読込、正規化、WER、RTF 計測の共通部品）
+
+**成果物**: `iparakeet/eval/*`, `scripts/eval_fp32.py`, `results/fp32.json`
+
+**未達時の切り分け**: 正規化器の版、前処理の dither、デコード（blank・重複除去）、チェックポイントの版（HF / NGC）を順に確認する。
+
+---
+
+### M2: スタンドアロン FP32 参照実装
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | 量子化を**どのテンソルにも**差し込め、実機グラフと同じ構造を持つ、NeMo 非依存のモデルを作る。実機グラフと同じ構造とは、BN の fold、Gather による Φ、共有定数 P、固定長バケットを指す。M3〜M6 はすべてこの実装を土台にする |
+| 論文の対応箇所 | §2.1（モデル構造）、§3.1（P は定数、Φ は静的インデックスマップ）、§4.1（入力長別グラフ＋無音パディング） |
+| 前提 | M1 |
+
+**ゴール（完了条件）**
+- [ ] [必達] NeMo とのロジット差 **max\|Δ\| < 1e−4**（FP32）、dev-other の書き起こしが**完全一致**
+- [ ] [必達] 次の置き換えをしても上記が成り立つことを単体テストで確認:
+  BN の DW conv への fold / NeMo の rel_shift → Gather（`idx[i,j] = L−1−i+j`）/ 長さ別 P → 最長 P のスライス共有
+- [ ] [必達] バケット＋無音パディングありの FP32 WER を測り、パディング自体の影響量を把握する
+- [ ] [目標] バケットの刻みを決める。test-other でのパディング率が論文の **23%（±2%）** になる刻みを採用する
+
+**主な作業**
+- `iparakeet/model/`: 前処理（NeMo 互換 log-mel、CPU/FP）、pre-encoder、Conformer ×24、CTC head、greedy デコード
+- `iparakeet/model/buckets.py`: 発話を収まる最小バケットに振り分け、無音特徴でパディング
+- test-other の発話長分布から、候補の刻み（1 s, 2 s, 5 s, 等比など）ごとのパディング率を計算
+
+**成果物**: `iparakeet/model/*`, `tests/test_model_parity.py`, `tests/test_relshift.py`, `configs/buckets.yaml`
+
+**未達時の切り分け**: 1 モジュールずつ NeMo の出力と中間テンソルを比較する（pre-encoder → 各層の FFN / MHSA / Conv の順）。
+
+---
+
+### M3: レンジ解析（Fig. 2 の再現）
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | 論文の診断「INT8 min–max が破綻するのは BN 出力と pre-encoder の 2 箇所だけ」を自分の環境で確かめる。そのうえで、M4〜M6 で使う量子化設定（INT16 にするテンソル、p99.9 で較正するテンソル）を根拠付きで確定させる |
+| 論文の対応箇所 | §3.3, Fig. 2(a)(b)、§4.1（標準 FP16 が失敗する理由） |
+| 前提 | M2（テンソル名を M4 と共通にするため） |
+
+**ゴール（完了条件）**
+- [ ] [必達] Fig. 2(a) を再現する。層ごとの BN スケール `|γ|/√(σ²+ε)` の max/median を出し、一部の層が 10^3〜10^4 に達する（論文: 最大 10,759、終盤層 1,136）
+- [ ] [必達] Fig. 2(b) を再現する。dev-other 上で max/p99.9 比が **pre-encoder で 11–21×、encoder で 2–3×**
+- [ ] [必達] 「INT16 にするテンソル」「p99.9 で較正するテンソル」の一覧を config として確定する
+- [ ] [目標] FP16 の最大値（65504）を超えるテンソルを特定し、標準 FP16 変換の 100% WER を説明できる
+
+**主な作業**
+- `scripts/range_analysis.py`: (a) は重みだけで計算。(b) は 2 パスで求める（1 パス目で max、2 パス目で固定ビンのヒストグラムから p99.9）
+- 図の出力（論文 Fig. 2 と並べて比較できる形式）
+
+**成果物**: `scripts/range_analysis.py`, `results/range/*.png|json`, `configs/tensor_groups.yaml`
+
+**未達時の切り分け**: 傾向が論文と違う場合は、チェックポイントの版、キャリブレーションデータ（dev-other）、どのテンソルを「pre-encoder の活性化」とみなすか、の順に見直す。
+
+---
+
+### M4: 整数シミュレータ構築
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | Table 2・3 を回すための、**integer-only が保証された** PyTorch 実装を作る。先にカーネル単体の正しさを担保しておけば、M5 で論文との差が出たときに「実装バグ」ではなく「量子化設定・未記載事項の違い」が原因だと言える |
+| 論文の対応箇所 | §2.2（Eq. 6, 7、I-BERT の LN / Softmax）、§3.1（Eq. 10, 11）、§3.2（Eq. 12） |
+| 前提 | M2, M3, M0（Swish 係数） |
+
+**ゴール（完了条件）**
+- [ ] [必達] 全整数カーネルの単体テストが通る。float 参照との誤差が理論上限内に収まること（例: I-Swish ≤ 0.039 + 量子化 1 ステップ、Φ は完全一致）
+- [ ] [必達] **float 非混入テスト**が通る。推論経路で float テンソルが生成されたら失敗させる
+- [ ] [必達] dev-other 全体で **INT32 オーバーフロー 0 件**（デバッグモードで検査）
+- [ ] [必達] 正しさの健全性チェック: 全テンソルを INT16 にし、Swish と sigmoid を高精度 LUT にした「ほぼ無損失」設定で、FP32 との WER 差が **0.1 pt 以内**になる
+- [ ] [必達] 11 条件（Table 2 の 3 レシピ ＋ Table 3 で I-Parakeet 以外の 8 条件）を **config の切り替えだけで**実行できる
+- [ ] [目標] GPU で test-other 1 回の評価が 1 時間以内（`torch._int_mm` を使用）
+
+**主な作業**
+- `quant/`: Eq. 6 の量子化、Eq. 7 の再量子化（n=16、m の相対誤差ログ）、min–max / パーセンタイルのオブザーバ、per-channel 重み
+- `intops/`: INT8 GEMM / Conv、I-BERT の LN / Softmax（int32/int64 で再実装）、I-Swish（4 種の係数＋Hard-Swish＋LUT）、GLU 用 sigmoid、整数相対位置 MHSA（Eq. 11）、残差加算
+- `sim/calibrate.py`: dev-other でキャリブレーションし、エンコーディング JSON を出力（M6 と共有）
+
+**成果物**: `iparakeet/quant/*`, `iparakeet/intops/*`, `iparakeet/sim/*`, `configs/recipes/*.yaml`, `tests/test_intops.py`, `tests/test_no_float.py`
+
+**未達時の切り分け**: 健全性チェックで FP32 と差が出る場合は、量子化とは無関係なバグ。1 層ずつ FP32 版と入れ替えて、差の出る演算を特定する。
+
+---
+
+### M5: シミュレーション実験（Table 2, 3 の再現）
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | 3 つの貢献の効果をハードウェア非依存で再現し、論文の中心的な主張を検証する。主張とは「各貢献がそれぞれ WER を改善し、合わせて I-BERT 系ベースラインを大きく上回る」こと |
+| 論文の対応箇所 | §4.2, Table 2, Table 3 |
+| 前提 | M4 |
+
+**ゴール（完了条件）**
+- [ ] [必達] Table 2 の順位が一致する（test-clean / test-other / CV の各列で）:
+  **I-BERT recipe > Naive INT8 > I-Parakeet > FP32**（WER の大きい順）
+- [ ] [必達] Table 3 の 3 グループ（Swish 5 条件、BN 3 条件、較正 3 条件）で、グループ内の WER 順位が論文と一致する。
+  ただし論文で差が 0.1 pt 未満の組（BN の per-channel INT16 5.29 と per-tensor INT16 5.32）は同等とみなし、順位は問わない
+- [ ] [目標] I-Parakeet が **2.61 / 5.32 / 14.70**（各 ±0.3 pt）。I-BERT recipe（3.41 / 7.41 / 19.05）と Naive INT8（3.01 / 6.38 / 16.54）も ±0.3 pt
+- [ ] [必達] 未記載事項の感度表を作る（`01_paper_summary.md` §7 の各項目を変えたときの WER の動き）
+- [ ] [目標] Swish を LUT に変えた「実機模擬」設定で WER が 5.32 から 4.97 付近へ下がるか確認する（論文 §4.1 の説明の検証）
 
 | 実験 | 設定 | 論文値（test-other） |
 |---|---|---|
@@ -96,85 +198,150 @@ Phase 0 環境・データ ─▶ Phase 1 FP32 参照実装 ─┬▶ Phase 2 �
 | BN 出力 ×3 | per-tensor INT16, per-channel INT16, per-tensor INT8 | 5.32 / 5.29 / 5.91 |
 | 較正 ×3 | hybrid, min–max のみ, p99.9 のみ | 5.32 / 5.64 / 8.03 |
 
-- test-clean と Common Voice でも Table 2 の 3 モデルを評価。
-- 論文と差が出た場合の切り分け手順:
-  1. 1 層ずつ整数版を FP32 版に戻して、誤差の大きい層・演算を特定
-  2. 未記載事項（GLU sigmoid、スコアのビット幅、I-BERT の出力ビット、丸め、n、パディング有無）の感度を測る
-  3. それでも合わない点は「未記載事項による差」として記録（論文著者への問い合わせ候補）
-- 追加実験（任意）: LUT Swish（実機模擬）で WER が 5.32 → 4.97 付近に下がるかを確認（論文 §4.1 の説明の検証）
+**成果物**: `scripts/eval_sim.py`, `scripts/run_ablation.py`, `results/sim/*.json`
 
-### Phase 5: 実機デプロイ = Table 1 の再現（2〜3 週）
+**未達時の切り分け**
+1. 1 層ずつ整数版を FP32 版に戻し、誤差の大きい層・演算を特定する
+2. 未記載事項（GLU の sigmoid、スコアのビット幅、I-BERT の出力ビット、丸め、n、パディングの有無）の感度を測る
+3. それでも合わない点は「論文に書かれていない事項による差」として記録する（著者への質問候補）
 
-1. **グラフ出力**: バケットごとの固定長 ONNX（Swish = `x·Sigmoid(x)`、Φ = 定数 Gather、P = 共有定数）＋ Phase 3 のエンコーディング JSON
-2. **QAIRT 2.47 で変換・量子化**: エンコーディング上書きを適用。全テンソルが固定小数点型であることを確認
-3. **HTP コンテキストバイナリ生成**: 全バケットを 1 コンテキストにまとめ重み共有。グラフが大きすぎる場合はエンコーダを分割（分割しても全て NPU 上）
-4. **実機ランナー**: まず `qnn-net-run` で動作確認 → C++ ランナー（QNN API）で test-other 全発話の推論・時間・ピーク RSS を計測
-5. **評価**: WER（Whisper 正規化）、RTF（パディング込み。特徴抽出込み / なしの両方）、ピークメモリ
-6. **ベースライン**:
-   - parakeet.cpp を Android NDK でビルドし、2 スレッド・f16 / q8_0 で RTF・メモリ計測（論文: RTF 0.36 / 0.42, 1517 / 1045 MiB）
-   - 標準ツールチェーンによる FP16 変換と INT8 PTQ（既定設定）→ 100% WER になることを確認
-- 端末: 論文と同じ Nothing Phone (3a)（SM7635）が理想。無い場合は他の Snapdragon 端末または Qualcomm AI Hub のクラウド端末で代替し、RTF は参考値扱い。
+---
 
-### Phase 6: まとめ（2〜3 日）
+### M6: NPU グラフ構築と integer-only 検証
 
-- 論文の各表・図との対応表（再現値 / 論文値 / 差 / 原因の推定）を `docs/04_results.md` にまとめる
-- 未記載事項ごとに採用した設定と感度を記録
+| 項目 | 内容 |
+|---|---|
+| **目的** | 論文のデプロイ上の主張「浮動小数点演算子なし・CPU フォールバックなしで NPU 上で動く」を、性能評価の前にまず**機能面で**成立させる。あわせて、シミュレータの量子化設定が実機グラフに正しく反映されていることを確認する |
+| 論文の対応箇所 | §4.1 Settings（QAIRT 2.47、入力長別グラフ、NPU 上の LUT sigmoid） |
+| 前提 | M2（グラフ構造・バケット）、M4（エンコーディング）、QAIRT SDK、実機または Qualcomm AI Hub |
+
+**ゴール（完了条件）**
+- [ ] [必達] 全バケットの固定長グラフについて、QAIRT で変換・量子化・HTP コンテキスト生成まで通る
+- [ ] [必達] グラフ内の **FP16/FP32 テンソルが 0 個**（変換ログとモデル情報で確認）。さらに実機の HTP 上で finalize に成功する（= CPU フォールバックなし）
+- [ ] [必達] シミュレータ（LUT Swish モード）と実機の出力が一致する。dev-other の 200 発話で **WER 差 ≤ 0.2 pt**
+- [ ] [目標] 重み共有で全バケットを 1 コンテキストにまとめ、ロード時のメモリを重み 1 コピー分（約 600 MB）＋α に収める
+
+**主な作業**
+- `deploy/export_onnx.py`: バケットごとの固定長 ONNX を出力。Swish = `x·Sigmoid(x)`、Φ = 定数 Gather、P = 共有定数
+- `deploy/encodings.py`: M4 のキャリブレーション結果を QAIRT 用のエンコーディング上書き JSON に変換（BN 出力 16 bit、per-channel 重み）
+- `deploy/qnn/`: 変換、量子化、コンテキスト生成のスクリプト（QAIRT 2.47 のツール名・オプションは SDK 同梱ドキュメントで確認）
+- 実機での `qnn-net-run` による動作確認
+
+**成果物**: `iparakeet/deploy/*`、エンコーディング JSON。コンテキストバイナリと SDK はリポジトリに含めない
+
+**未達時の切り分け**
+- 変換で FP テンソルが残る → エンコーディングが欠けているテンソルを特定し、上書き JSON を修正する
+- グラフが大きすぎる → バケット数を減らすか、エンコーダを分割する（分割しても全て NPU 上で動かす）
+- シミュレータと出力が合わない → 層ごとに出力をダンプして比較（QNN 側の LayerNorm / Softmax 実装差が主な候補）
+
+---
+
+### M7: 実機評価（Table 1 の再現）
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | NPU 実行の精度・速度・メモリを論文と同じ条件で測り、「CPU 比 7.5 倍速・ピークメモリ 60% 減で、WER は +1.21 pt」というトレードオフを検証する。あわせて標準ツールチェーンが失敗することを確かめ、提案手法が必要な理由を裏付ける |
+| 論文の対応箇所 | §4.1 Results, Table 1 |
+| 前提 | M6、端末（理想は Nothing Phone (3a) / SM7635） |
+
+**ゴール（完了条件）**
+- [ ] [必達] test-other 全 2,939 発話を NPU で推論し、WER・RTF（パディング込み）・ピークメモリを計測する
+- [ ] [目標] I-Parakeet: **WER 4.97%（±0.3 pt）**。**RTF 0.048・ピークメモリ 612 MiB** は同一端末なら ±20%、別端末なら参考値として記録する
+- [ ] [必達] CPU ベースライン（parakeet.cpp、2 スレッド、f16 / q8_0）を同じ端末で計測する（論文: WER 3.76、RTF 0.36 / 0.42、1517 / 1045 MiB）。NPU との速度比を出す（論文: 7.5×）
+- [ ] [必達] 標準ツールチェーンの FP16 変換と INT8 PTQ で WER が破綻する（論文: 100%）ことを確認し、原因を M3 の解析結果と対応付ける
+- [ ] [必達] RTF の計測範囲を明記する（特徴抽出込み / NPU 推論のみの両方を記録）
+
+**主な作業**
+- C++ ランナー（QNN API）: コンテキストを 1 回ロードし、発話をバケットへ振り分けて推論、時間とピーク RSS を記録
+- parakeet.cpp の Android NDK ビルドと計測
+- 標準ツールチェーン（QAIRT 既定設定）での FP16 / INT8 PTQ 変換と評価
+
+**成果物**: `iparakeet/deploy/android/*`, `scripts/eval_device.py`, `results/device/*.json`
+
+**未達時の切り分け**
+- WER が M6 のサブセット評価より悪い → 長いバケットだけ悪化していないか確認（長さ依存の問題の可能性）
+- RTF が遅い → プロファイルでボトルネックの op を特定。バケット刻み（パディング率）の影響も確認する
+
+---
+
+### M8: 結果まとめ
+
+| 項目 | 内容 |
+|---|---|
+| **目的** | 再現結果、論文との差、その原因を、第三者が追試できる形で残す |
+| 論文の対応箇所 | 全体（§3.2 係数、Fig. 2、Table 1〜3） |
+| 前提 | M5, M7（実機が用意できない場合は M5 まででまとめる） |
+
+**ゴール（完了条件）**
+- [ ] [必達] `docs/04_results.md` に、論文の全表・図と再現値の対照表（再現値 / 論文値 / 差 / 原因の推定）を載せる
+- [ ] [必達] 各数値を出すコマンドと設定ファイルを記載する。再実行で同じ値が出ること
+- [ ] [必達] 論文に書かれていない事項ごとに、採用した設定と感度を記録する
+- [ ] [必達] 未解決点（著者への質問候補）を一覧にする
+
+**成果物**: `docs/04_results.md`、README の更新
+
+---
 
 ## 3. リポジトリ構成案
 
 ```
 iparakeet/
-  model/     parakeet.py, load_nemo.py, frontend.py, buckets.py
-  quant/     fixed_point.py, observers.py, qconfig.py
-  intops/    linear.py, layernorm.py, softmax.py, swish.py, sigmoid.py, relpos_mhsa.py, residual.py
-  sim/       int_parakeet.py, calibrate.py
-  eval/      datasets.py, normalizer.py, wer.py, rtf.py
-  deploy/    export_onnx.py, encodings.py, qnn/（変換スクリプト）, android/（C++ ランナー）
-configs/     recipes/*.yaml（ibert_recipe, naive_int8, iparakeet, ablations）
-scripts/     fit_swish_approx.py（済）, eval_fp32.py, range_analysis.py, eval_sim.py, run_ablation.py
+  model/     parakeet.py, load_nemo.py, frontend.py, buckets.py        ← M2
+  quant/     fixed_point.py, observers.py, qconfig.py                   ← M4
+  intops/    linear.py, layernorm.py, softmax.py, swish.py,
+             sigmoid.py, relpos_mhsa.py, residual.py                    ← M4
+  sim/       int_parakeet.py, calibrate.py                              ← M4
+  eval/      datasets.py, normalizer.py, wer.py, rtf.py                 ← M1
+  deploy/    export_onnx.py, encodings.py, qnn/, android/               ← M6, M7
+configs/     buckets.yaml, tensor_groups.yaml, recipes/*.yaml
+scripts/     fit_swish_approx.py (M0), eval_fp32.py (M1), range_analysis.py (M3),
+             eval_sim.py / run_ablation.py (M5), eval_device.py (M7)
 tests/
+results/
 docs/
 ```
 
-## 4. 未記載事項の仮決め（Phase 3〜5 の既定値）
+## 4. 論文に書かれていない事項の仮決め（M4〜M7 の既定値）
 
-| 項目 | 既定値 | 感度を見る代替案 |
-|---|---|---|
-| GLU の sigmoid | INT8 LUT | tanh への L∞ フィット多項式 |
-| 融合スコア qs のビット幅 | INT8 | INT16 |
-| I-BERT Softmax / LN の出力 | 8 bit | 16 bit |
-| 再量子化の丸め | round-half-up（加算 + 右シフト） | floor |
-| 固定小数点乗数の n | 16（論文） | 24, 31 |
-| キャリブレーション | dev-other 全体 | 256 / 512 発話のサブセット |
-| p99.9 を適用する範囲 | pre-encoder 内の全活性化（Linear 出力を含む） | Linear 出力を除く |
-| 無音特徴 | 正規化後 log-mel で 0 ベクトル | 無音波形から計算した特徴 |
-| シミュレーション時のパディング | なし（発話長そのまま） | 実機と同じバケット＋パディング |
+| 項目 | 既定値 | 感度を見る代替案 | 関係する M |
+|---|---|---|---|
+| GLU の sigmoid | INT8 LUT | tanh への L∞ フィット多項式 | M4, M5 |
+| 融合スコア qs のビット幅 | INT8 | INT16 | M4, M5 |
+| I-BERT Softmax / LN の出力 | 8 bit | 16 bit | M4, M5 |
+| 再量子化の丸め | round-half-up（加算＋右シフト） | floor | M4, M5 |
+| 固定小数点乗数の n | 16（論文） | 24, 31 | M4, M5 |
+| キャリブレーション | dev-other 全体 | 256 / 512 発話のサブセット | M3, M4 |
+| p99.9 を適用する範囲 | pre-encoder 内の全活性化（Linear 出力を含む） | Linear 出力を除く | M3, M5 |
+| 無音特徴 | 正規化後 log-mel で 0 ベクトル | 無音波形から計算した特徴 | M2, M7 |
+| シミュレーション時のパディング | なし（発話長そのまま） | 実機と同じバケット＋パディング | M5 |
+| 実機の LayerNorm / Softmax | QNN ネイティブの量子化 op | I-BERT カーネルを基本 op で構成 | M6 |
 
 ## 5. リスクと対策
 
-| リスク | 影響 | 対策 |
+| リスク | 影響する M | 対策 |
 |---|---|---|
-| 未記載事項が多く、シミュレーション WER が一致しない | L3 | 感度分析で幅を示す。順位の一致を主目標にする |
-| QAIRT 2.47 / 端末が入手できない | L4 | 近いバージョン・別端末・AI Hub で代替し、差を明記 |
-| n=16 の固定小数点乗数で精度不足 | L3 | m の誤差をログ出力、n の感度を報告 |
-| INT16 経路・LN・Softmax でのオーバーフロー | L3 | int64 計算 + INT32 範囲チェックのデバッグモード |
-| 0.6B × 複数バケットのコンテキストが大きすぎる / コンパイルが重い | L4 | 重み共有、バケット数削減、エンコーダ分割 |
-| 計算資源（この環境は GPU なし、HF / OpenSLR / arXiv がブロック） | 全体 | GPU マシンで実行、または環境のネットワーク許可リストに追加 |
-| ライセンス | 公開時 | Parakeet は CC-BY-4.0（量子化モデルは帰属表示付きで配布可）。QAIRT SDK と論文 PDF はリポジトリに含めない |
+| 論文に書かれていない事項が多く、シミュレーション WER が一致しない | M5 | 感度分析で幅を示す。[必達] は順位の一致に置く |
+| QAIRT 2.47 や端末を入手できない | M6, M7 | 近いバージョン・別端末・AI Hub で代替し、差を明記する |
+| n=16 の固定小数点乗数で精度が足りない | M4, M5 | m の誤差をログ出力し、n の感度を報告する |
+| INT16 経路・LN・Softmax でのオーバーフロー | M4 | int64 計算＋INT32 範囲チェックのデバッグモード |
+| 0.6B × 複数バケットでコンテキストが大きすぎる / コンパイルが重い | M6 | 重み共有、バケット数削減、エンコーダ分割 |
+| 計算資源（この環境は GPU なし。HF / OpenSLR / arXiv がブロック） | M1〜M5 | GPU マシンで実行するか、環境のネットワーク許可リストに追加する |
+| ライセンス | M8 | Parakeet は CC-BY-4.0（量子化モデルは帰属表示付きで配布可）。QAIRT SDK と論文 PDF はリポジトリに含めない |
 
 ## 6. 着手前に決めたいこと
 
-1. **実機**: Nothing Phone (3a) か他の Snapdragon 端末は用意できるか。Qualcomm AI Hub のアカウントはあるか。
-2. **計算資源**: シミュレータ実験（Table 2/3 で 14 条件 × 複数テストセット）を回す GPU マシンはあるか。
-3. **スコープ**: シミュレーション（L0〜L3）を先に完了させ、その後実機（L4）に進む順序でよいか。Common Voice も対象にするか。
+1. **実機**（M6, M7）: Nothing Phone (3a) か他の Snapdragon 端末は用意できるか。Qualcomm AI Hub のアカウントはあるか。
+2. **計算資源**（M1〜M5）: シミュレータ実験（11 条件 × 複数テストセット）を回す GPU マシンはあるか。
+3. **スコープ**: M5 までを先に完了させ、その後 M6・M7 に進む順序でよいか。Common Voice も対象にするか。
 4. **実行環境**: このクラウド環境で進める場合、`huggingface.co`, `openslr.org`（LibriSpeech）, Common Voice の配布元などをネットワーク許可に追加する必要がある。
 
 ## 7. 目安スケジュール（1 人・GPU あり想定）
 
-| 週 | 内容 |
+| 週 | マイルストーン |
 |---|---|
-| 1 | Phase 0, 1（FP32 一致まで）, Phase 2 |
-| 2〜3 | Phase 3（整数カーネル + テスト + 組み立て） |
-| 4 | Phase 4（Table 2, 3） |
-| 5〜7 | Phase 5（実機。ツールチェーンの試行錯誤込み） |
-| 8 | Phase 6（まとめ） |
+| 1 | M1, M2, M3 |
+| 2〜3 | M4 |
+| 4 | M5（並行して M6 の準備: SDK・端末のセットアップ） |
+| 5〜6 | M6 |
+| 7 | M7 |
+| 8 | M8 |
