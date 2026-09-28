@@ -42,3 +42,13 @@ def transcribe_manifest(model, tokenizer, entries: list[ManifestEntry], batch_si
             ids = ctc_greedy_ids(logits[row, : int(enc_lengths[row])].cpu(), model.cfg.blank_id)
             texts[i] = tokenizer.decode(ids)
     return texts
+
+
+@torch.no_grad()
+def iter_features(model, entries: list[ManifestEntry], device: str = "cpu"):
+    """Yield (features cropped to their valid length, lengths) one utterance at a time."""
+    for entry in entries:
+        audio = torch.from_numpy(load_audio(entry.audio_filepath, model.cfg.sample_rate))[None].to(device)
+        feats, lengths = model.preprocessor(audio, torch.tensor([audio.shape[1]], device=device))
+        n = int(lengths[0])
+        yield feats[:, :, :n], lengths
