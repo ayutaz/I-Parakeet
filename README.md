@@ -11,7 +11,8 @@ NVIDIA Parakeet-CTC-0.6B を浮動小数点演算なし・CPU フォールバッ
 |---|---|
 | [docs/01_paper_summary.md](docs/01_paper_summary.md) | 論文の内容整理（手法・実験・数値）と、本文に書かれていない点の一覧 |
 | [docs/02_technical_survey.md](docs/02_technical_survey.md) | 再現のための技術調査（NeMo の実装、整数カーネル、QNN ツールチェーン、評価方法） |
-| [docs/03_reproduction_plan.md](docs/03_reproduction_plan.md) | フェーズ別の再現計画、成功基準、リスク |
+| [docs/03_reproduction_plan.md](docs/03_reproduction_plan.md) | マイルストーン（M0〜M8）ごとの目的・ゴール、リスク |
+| [docs/04_results.md](docs/04_results.md) | 実行結果、論文に書かれていない事項の決定、残りの実行手順 |
 
 ## 現状
 
