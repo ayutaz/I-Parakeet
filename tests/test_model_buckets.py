@@ -44,3 +44,7 @@ def test_search_uniform_step_returns_step_closest_to_target_ratio():
     assert step == 1.0 and ratio == pytest.approx(0.0)
     step, ratio = search_uniform_step(durations, target_ratio=1.0, steps=[1.0, 2.0, 4.0])
     assert step == 4.0
+
+
+def test_bucket_names_are_stable_identifiers():
+    assert BucketSet([3.0, 10.0, 0.5]).names == ["b3s", "b10s", "b0.5s"]

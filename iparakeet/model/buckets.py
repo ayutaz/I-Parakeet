@@ -12,6 +12,10 @@ class BucketSet:
     hop_seconds: float = 0.01
 
     @property
+    def names(self) -> list[str]:
+        return [f"b{s:g}s" for s in self.seconds]
+
+    @property
     def frames(self) -> list[int]:
         return [round(s / self.hop_seconds) for s in self.seconds]
 
