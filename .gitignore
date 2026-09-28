@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+# 論文 PDF・データ・モデル・ベンダー SDK はコミットしない
+*.pdf
+data/
+models/
+*.nemo
+*.onnx
+*.bin
+*.dlc
+*.gguf
