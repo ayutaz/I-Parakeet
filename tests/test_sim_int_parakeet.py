@@ -130,3 +130,17 @@ def test_one_build_serves_all_input_lengths(fp_and_stats):
         assert sim.forward_int(sim.quantize_input(torch.randn(1, 80, t))).shape[1] == (((t - 1) // 2) // 2) // 2 + 1
     with pytest.raises(ValueError):
         sim.forward_int(sim.quantize_input(torch.randn(1, 80, MAX_FRAMES + 16)))
+
+
+def test_head_outputs_share_one_grid_so_integer_argmax_matches_fp32(fp_and_stats):
+    # Per-class weight scales differ, so argmax must run on a common output grid, not on raw accumulators.
+    model, stats = fp_and_stats
+    sim = IntParakeet(model, stats, RECIPES["lossless_int16"], MAX_FRAMES)
+    agree = []
+    for feats, lengths in _inputs():
+        with torch.no_grad():
+            ref, _ = model.forward_features(feats, lengths)
+        q = sim.forward_int(sim.quantize_input(feats))
+        agree.append((q.argmax(-1) == ref.argmax(-1)).double().mean())
+    assert torch.stack(agree).mean() > 0.9
+    assert isinstance(sim.S("head.logits"), float)

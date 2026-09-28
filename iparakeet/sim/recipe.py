@@ -18,6 +18,7 @@ class Recipe:
     softmax_bits: int = 8
     softmax_range_reduction: str = "log2"  # log2 | ibert
     requant_shift: int = 16  # n in Eq. (7)
+    head_bits: int = 16  # common grid of the CTC logits before argmax (not specified in the paper)
 
 
 _IPARAKEET = Recipe("iparakeet", pre_calib="p99.9", bn_bits=16)
@@ -44,6 +45,7 @@ RECIPES: dict[str, Recipe] = {
     "iparakeet_int16_scores": replace(_IPARAKEET, name="iparakeet_int16_scores", score_bits=16),
     "iparakeet_glu_poly": replace(_IPARAKEET, name="iparakeet_glu_poly", glu_sigmoid="poly:linf_tanh"),
     "iparakeet_n24": replace(_IPARAKEET, name="iparakeet_n24", requant_shift=24),
+    "iparakeet_head8": replace(_IPARAKEET, name="iparakeet_head8", head_bits=8),
     "lossless_int16": Recipe(
         "lossless_int16", act_bits=16, weight_bits=16, bn_bits=16, swish="lut", score_bits=16, softmax_bits=16, requant_shift=24
     ),

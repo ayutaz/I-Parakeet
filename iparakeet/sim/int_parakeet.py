@@ -39,7 +39,7 @@ class IntParakeet:
             self.blocks = [self._build_block(layer, i) for i, layer in enumerate(model.encoder.layers)]
             last = f"L{len(self.blocks) - 1}.out"
             dec = model.decoder.decoder_layers[0]
-            self.head = self._linear(dec.weight.squeeze(-1), dec.bias, last, None)
+            self.head = self._linear(dec.weight.squeeze(-1), dec.bias, last, "head.logits")
 
     # ---- scales ----
     def bits(self, name: str) -> int:
@@ -49,6 +49,8 @@ class IntParakeet:
             return self.recipe.score_bits
         if name.endswith("att.probs"):
             return self.recipe.softmax_bits
+        if name == "head.logits":
+            return self.recipe.head_bits
         return self.recipe.act_bits
 
     def _alpha(self, name: str) -> float:
@@ -73,11 +75,8 @@ class IntParakeet:
 
     def _linear(self, weight, bias, in_name, out_name, extra=1.0, relu=False) -> IntLinear:
         r = self.recipe
-        out_scale = 1.0 if out_name is None else self.S(out_name)
-        out_bits = r.act_bits if out_name is None else self.bits(out_name)
-        layer = IntLinear(weight, bias, self.S(in_name), out_scale, out_bits, r.requant_shift, r.weight_bits, extra, relu)
-        if out_name is not None:
-            self._record(layer.ratio * extra, layer.m, layer.n)
+        layer = IntLinear(weight, bias, self.S(in_name), self.S(out_name), self.bits(out_name), r.requant_shift, r.weight_bits, extra, relu)
+        self._record(layer.ratio * extra, layer.m, layer.n)
         return layer
 
     def _add(self, in_names, factors, out_name) -> IntAdd:
@@ -171,7 +170,7 @@ class IntParakeet:
         return quantize(feats.transpose(1, 2), self.S("pre.in"), self.bits("pre.in"))
 
     def forward_int(self, q_in: torch.Tensor, trace=None) -> torch.Tensor:
-        """(B, T, n_mels) INT features -> (B, L, vocab+1) INT32 CTC accumulators."""
+        """(B, T, n_mels) INT features -> (B, L, vocab+1) CTC logits on one common INT grid."""
         if q_in.shape[1] > self.max_frames:
             raise ValueError(f"{q_in.shape[1]} frames exceed the compiled maximum {self.max_frames}")
         t = trace or (lambda name, q: None)
@@ -185,7 +184,9 @@ class IntParakeet:
         t("pre.out", x)
         for i, blk in enumerate(self.blocks):
             x = self._run_block(blk, x, trace, f"L{i}.")
-        return self.head.accumulate(x)
+        logits = self.head(x)
+        t("head.logits", logits)
+        return logits
 
     def _run_block(self, b: _Block, x: torch.Tensor, trace, p: str) -> torch.Tensor:
         t = trace or (lambda name, q: None)
@@ -219,8 +220,7 @@ class IntParakeet:
     # ---- convenience ----
     def logits(self, feats: torch.Tensor) -> torch.Tensor:
         """Dequantized CTC logits for (B, n_mels, T) features."""
-        acc = self.forward_int(self.quantize_input(feats))
-        return acc.double() * self.head.ratio
+        return self.dequantize("head.logits", self.forward_int(self.quantize_input(feats)))
 
     def transcribe_ids(self, feats: torch.Tensor) -> list[int]:
         acc = self.forward_int(self.quantize_input(feats))
