@@ -10,3 +10,5 @@ models/
 *.bin
 *.dlc
 *.gguf
+results/
+.pytest_cache/

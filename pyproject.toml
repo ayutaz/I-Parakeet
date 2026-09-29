@@ -1,0 +1,43 @@
+[project]
+name = "iparakeet"
+version = "0.1.0"
+description = "Reproduction of I-Parakeet: Integer-Only Conformer ASR on Mobile NPU (arXiv 2609.30846)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "torch>=2.4",
+    "pyyaml>=6.0",
+    "sentencepiece>=0.2",
+    "jiwer>=3.0",
+    "soundfile>=0.12",
+    "whisper-normalizer>=0.1.12",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+deploy = [
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+]
+
+[dependency-groups]
+dev = [
+    "librosa>=0.11.0",
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["iparakeet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+markers = [
+    "slow: long-running tests",
+]
