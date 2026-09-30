@@ -25,7 +25,7 @@ def main(argv=None) -> dict:
     eval_sim.add_common_args(parser)
     parser.add_argument("--manifests", nargs="+", required=True, help="stems must be test-clean / test-other / commonvoice-test")
     parser.add_argument("--recipes", nargs="+", default=DEFAULT_RECIPES, choices=sorted(RECIPES))
-    parser.add_argument("--fp32", default=None, help="optional JSON {testset: WER %} of the FP32 model")
+    parser.add_argument("--fp32", default=None, help="optional JSON {testset: WER %%} of the FP32 model")
     args = parser.parse_args(argv)
 
     model, tokenizer = eval_sim.load_model(args.nemo)
