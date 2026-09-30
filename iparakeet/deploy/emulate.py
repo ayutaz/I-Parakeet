@@ -12,12 +12,23 @@ import onnx
 import onnxruntime as ort
 
 
+def ort_session(graph: onnx.ModelProto) -> ort.InferenceSession:
+    """CPU session that keeps QuantizeLinear/DequantizeLinear as fake quantization.
+
+    By default onnxruntime fuses QDQ groups into integer kernels whose arithmetic depends on the
+    CPU (u8s8 GEMMs saturate without VNNI), so the same graph gives different logits per machine.
+    """
+    opts = ort.SessionOptions()
+    opts.add_session_config_entry("session.disable_quant_qdq", "1")
+    return ort.InferenceSession(graph.SerializeToString(), opts, providers=["CPUExecutionProvider"])
+
+
 def run_input_lists_with_ort(graphs: dict[str, onnx.ModelProto], inputs_root, outputs_root) -> None:
     for name, graph in graphs.items():
         list_file = Path(inputs_root) / name / "input_list.txt"
         if not list_file.exists():
             continue
-        sess = ort.InferenceSession(graph.SerializeToString(), providers=["CPUExecutionProvider"])
+        sess = ort_session(graph)
         shape = [d.dim_value for d in graph.graph.input[0].type.tensor_type.shape.dim]
         for i, line in enumerate(l for l in list_file.read_text().splitlines() if l.strip()):
             path = line.split(":=", 1)[1]
