@@ -9,3 +9,6 @@ __pycache__/
 *.pt
 *.ckpt
 !tests/fixtures/*.pt
+# the parent repository ignores data/ and results/ at any depth
+!/selfaccent/data/
+!/results/
