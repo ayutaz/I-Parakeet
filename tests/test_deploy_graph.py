@@ -2,12 +2,12 @@ import math
 
 import numpy as np
 import onnx
-import onnxruntime as ort
 import pytest
 import torch
 
 from conftest import randomize_, tiny_config
 from iparakeet.analysis.range import calibrate
+from iparakeet.deploy.emulate import ort_session
 from iparakeet.deploy.encodings import build_encodings, missing_encodings
 from iparakeet.deploy.onnx_graph import ALLOWED_OPS, build_onnx
 from iparakeet.deploy.qdq import insert_qdq, unquantized_activation_inputs
@@ -32,8 +32,11 @@ def setup():
 
 
 def _run(model_proto, feats):
-    sess = ort.InferenceSession(model_proto.SerializeToString(), providers=["CPUExecutionProvider"])
-    return sess.run(["head.logits"], {"pre.in": feats[0].T.contiguous().numpy()})[0]
+    return ort_session(model_proto).run(["head.logits"], {"pre.in": feats[0].T.contiguous().numpy()})[0]
+
+
+def _sqnr_db(ref, x):
+    return 10 * math.log10(float((ref**2).sum() / ((ref - x) ** 2).sum()))
 
 
 def test_fp_graph_matches_torch_for_each_bucket_length(setup):
@@ -92,16 +95,18 @@ def test_per_channel_activation_encodings_are_rejected(setup):
 def test_qdq_graph_quantizes_every_activation_and_tracks_the_integer_simulator(setup):
     model, stats = setup
     sim = IntParakeet(model, stats, RECIPES["iparakeet_lut"], MAX_FRAMES)
-    agree, sqnr = [], []
+    vs_sim, vs_fp = [], []
     for feats, lengths in _inputs():
         graph = build_onnx(model, n_frames=feats.shape[-1], max_frames=MAX_FRAMES)
         qdq = insert_qdq(graph, build_encodings(sim, graph))
         assert unquantized_activation_inputs(qdq) == []
         out = torch.from_numpy(_run(qdq, feats))
-        sim_logits = sim.logits(feats)[0].float()
-        agree.append((out.argmax(-1) == sim_logits.argmax(-1)).double().mean())
+        vs_sim.append(_sqnr_db(sim.logits(feats)[0].float(), out))
         with torch.no_grad():
             ref, _ = model.forward_features(feats, lengths)
-        sqnr.append(10 * math.log10(float((ref[0] ** 2).sum() / ((ref[0] - out) ** 2).sum())))
-    assert torch.stack(agree).mean() >= 0.8
-    assert min(sqnr) > 5
+        vs_fp.append(_sqnr_db(ref[0], out))
+    # The QDQ graph sits closer to the integer simulator (~15-20 dB) than either does to FP32 (~13-15 dB).
+    # Argmax agreement is not asserted: the tiny random model's 16 logits are near ties, so it swings
+    # with last-bit float differences between CPUs.
+    assert min(vs_sim) > 12
+    assert min(vs_fp) > 5

@@ -18,7 +18,7 @@ NVIDIA Parakeet-CTC-0.6B を浮動小数点演算なし・CPU フォールバッ
 
 マイルストーンごとの目的・ゴールは [docs/03_reproduction_plan.md](docs/03_reproduction_plan.md)、達成状況は [docs/04_results.md](docs/04_results.md) を参照。
 
-M0〜M7 のコードはすべて実装済みで、テストは 164 件すべて通過している（TDD、uv で環境管理）。
+M0〜M7 のコードはすべて実装済みで、テストは 175 件すべて通過している（TDD、uv で環境管理）。
 一方、実データ・実機が必要な数値（WER、RTF、Fig. 2 の実測値）は未測定である。調査・実装を行ったクラウド環境では、モデル・データのダウンロードがブロックされており、GPU・QAIRT SDK・実機もなかったため。
 
 | # | マイルストーン | 状態 |
@@ -37,7 +37,7 @@ M0〜M7 のコードはすべて実装済みで、テストは 164 件すべて�
 
 ```bash
 uv sync --extra deploy
-uv run pytest            # 164 tests
+uv run pytest            # 175 tests
 uv run python scripts/fit_swish_approx.py          # M0
 uv run python -m scripts.kernel_report --out results/kernels
 ```
