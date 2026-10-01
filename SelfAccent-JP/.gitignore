@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# generated data, checkpoints and audio are not committed
+data/
+exp/
+*.wav
+*.pt
+*.ckpt
+!tests/fixtures/*.pt
