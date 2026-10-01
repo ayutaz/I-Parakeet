@@ -5,6 +5,7 @@ from selfaccent.audio import MelConfig
 from selfaccent.frontend import OracleRenderer, analyze
 from selfaccent.metrics import (
     Utterance,
+    build_reference_set,
     dtw_path,
     f0_distance,
     forced_choice,
@@ -58,7 +59,7 @@ def test_forced_choice_picks_matching_contour():
     mel = np.stack([np.cos(t * k) for k in range(1, 5)], axis=1)
     cands = [Utterance(mel, np.log(150 + 40 * np.sin(np.pi * t * (k + 1)))) for k in range(3)]
     noisy = Utterance(mel, cands[1].logf0 + np.random.default_rng(0).normal(0, 0.01, 60))
-    choice, dists = forced_choice(noisy, cands)
+    choice, dists = forced_choice(noisy, build_reference_set(cands))
     assert choice == 1
     assert len(dists) == 3
 
@@ -82,8 +83,10 @@ def test_oracle_renderings_are_classified_as_themselves():
         utterance_from_wav(oracle.render_with_override(text, idx, [AccentPhrase(("ハ", "シ"), k)]), cfg)
         for k in range(3)
     ]
+    refset = build_reference_set(refs)
+    assert 0 < refset.region.sum() < len(refset.region)
     for k in range(3):
-        choice, _ = forced_choice(refs[k], refs)
+        choice, _ = forced_choice(refs[k], refset)
         assert choice == k
 
 
@@ -94,3 +97,22 @@ def test_mel_distance_is_small_for_same_sentence():
     b = utterance_from_wav(oracle.render("箸で食べる。"), cfg)
     assert mel_distance(a, a) == pytest.approx(0.0, abs=1e-6)
     assert mel_distance(a, b) > 0.1
+
+
+def test_region_covers_frames_where_references_disagree():
+    t = np.linspace(0, 1, 40)
+    mel = np.stack([np.sin(3 * t), np.cos(5 * t), t], axis=1)
+    flat = np.log(150 + 0 * t)
+    bump = flat.copy()
+    bump[10:20] += 0.3
+    refset = build_reference_set([Utterance(mel, flat), Utterance(mel, bump)])
+    assert refset.region[10:20].all()
+    assert not refset.region[25:].any()
+
+
+def test_identical_references_fall_back_to_all_voiced_frames():
+    t = np.linspace(0, 1, 30)
+    mel = np.stack([np.sin(3 * t), t], axis=1)
+    u = Utterance(mel, np.log(150 + 20 * t))
+    refset = build_reference_set([u, u])
+    assert refset.region.all()

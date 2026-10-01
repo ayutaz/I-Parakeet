@@ -3,8 +3,11 @@
 The paper scores accent with screened native listeners. For a CPU-only toy
 setting we replace the listener with a forced choice: the generated speech is
 compared with oracle (HTS) renderings of the same sentence for every accent
-type of the word, and the closest log-F0 contour (after DTW alignment on mel)
-is taken as the perceived accent.
+type of the word, and the candidate with the closest log-F0 contour is taken
+as the perceived accent. Contours are compared only on frames where the
+candidates differ from each other (the word, the following particle and the
+downstep it causes), after DTW alignment on mel and removal of each
+utterance's median pitch. Validation of the judge itself: docs/04_benchmark.md.
 """
 
 from __future__ import annotations
@@ -73,8 +76,64 @@ def mel_distance(gen: Utterance, ref: Utterance) -> float:
     return float(np.mean([np.abs(gen.mel[i] - ref.mel[j]).mean() for i, j in path]))
 
 
-def forced_choice(gen: Utterance, candidates: list[Utterance]) -> tuple[int, list[float]]:
-    dists = [f0_distance(gen, c) for c in candidates]
+@dataclass
+class ReferenceSet:
+    """Oracle candidates mapped onto the frames of the first one.
+
+    ``values[k, t]`` is the log-F0 of candidate k at frame t of candidate 0
+    (DTW on mel), ``region`` marks frames where the candidates disagree after
+    removing each one's median pitch. Only those frames carry information about
+    the accent, so the judge compares contours there.
+    """
+
+    refs: list[Utterance]
+    values: np.ndarray  # [K, T0]
+    voiced: np.ndarray  # [T0]
+    region: np.ndarray  # [T0]
+
+
+def _project(src: Utterance, anchor: Utterance) -> np.ndarray:
+    """Mean log-F0 of ``src`` frames aligned to each frame of ``anchor``."""
+    _, path = dtw_path(_zscore(anchor.mel), _zscore(src.mel))
+    acc = np.zeros(len(anchor.mel))
+    cnt = np.zeros(len(anchor.mel))
+    for i, j in path:
+        if np.isfinite(src.logf0[j]):
+            acc[i] += src.logf0[j]
+            cnt[i] += 1
+    out = np.full(len(anchor.mel), np.nan)
+    out[cnt > 0] = acc[cnt > 0] / cnt[cnt > 0]
+    return out
+
+
+def build_reference_set(refs: list[Utterance], spread_threshold: float = 0.03) -> ReferenceSet:
+    values = np.stack([_project(r, refs[0]) for r in refs])
+    voiced = np.isfinite(values).all(0)
+    centered = values - np.array([np.median(v[voiced]) if voiced.any() else 0.0 for v in values])[:, None]
+    spread = np.where(voiced, np.nanmax(centered, 0) - np.nanmin(centered, 0), 0.0)
+    region = (spread > spread_threshold) & voiced
+    if region.sum() < 2:
+        region = voiced.copy()
+    return ReferenceSet(list(refs), values, voiced, region)
+
+
+def reference_distances(gen: Utterance, refset: ReferenceSet) -> list[float]:
+    g = _project(gen, refset.refs[0])
+    ok = np.isfinite(g) & refset.voiced
+    sel = ok & refset.region
+    if sel.sum() < 2:
+        return [float("inf")] * len(refset.refs)
+    g = g - np.median(g[ok])
+    out = []
+    for v in refset.values:
+        r = v - np.median(v[ok])
+        out.append(float(np.abs(g[sel] - r[sel]).mean()))
+    return out
+
+
+def forced_choice(gen: Utterance, refset: ReferenceSet) -> tuple[int, list[float]]:
+    """Index of the candidate whose pitch contour is closest to ``gen``."""
+    dists = reference_distances(gen, refset)
     return int(np.argmin(dists)), dists
 
 

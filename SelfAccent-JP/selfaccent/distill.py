@@ -124,7 +124,7 @@ def train_student(
         losses["loss"].backward()
         torch.nn.utils.clip_grad_norm_(params, cfg.grad_clip)
         opt.step()
-        record = {"step": step, "lr": lr, **{k: float(v) for k, v in losses.items()}}
+        record = {"step": step, "lr": lr, **{k: v.item() for k, v in losses.items()}}
         history.append(record)
         if log_fn and (step % cfg.log_every == 0 or step == cfg.steps - 1):
             log_fn(record)

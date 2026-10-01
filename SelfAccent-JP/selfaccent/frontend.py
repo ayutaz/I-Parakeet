@@ -123,8 +123,8 @@ class OracleRenderer:
     def labels_with_override(self, text: str, index: int, phrases: list[AccentPhrase]) -> list[str]:
         return pyopenjtalk.make_label(_override(_frontend(text), index, phrases))
 
-    def synthesize_labels(self, labels: list[str]) -> np.ndarray:
-        x, sr = pyopenjtalk.synthesize(labels)
+    def synthesize_labels(self, labels: list[str], speed: float = 1.0, half_tone: float = 0.0) -> np.ndarray:
+        x, sr = pyopenjtalk.synthesize(labels, speed=speed, half_tone=half_tone)
         assert sr == HTS_SAMPLE_RATE
         y = resample_poly(x / 32768.0, self._up, self._down)
         return np.clip(y, -1.0, 1.0).astype(np.float32)
